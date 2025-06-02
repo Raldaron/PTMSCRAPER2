@@ -13,18 +13,21 @@ import argparse
 import csv
 import json
 import logging
+import os
+import pprint
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from time import sleep
 from typing import Dict, List
 
-import pandas as pd
-import requests, os, pprint
-from bs4 import BeautifulSoup
+import requests
 from requests.auth import HTTPBasicAuth
-import time
-from requests.exceptions import ReadTimeout, ConnectionError
+from requests.exceptions import ConnectionError, ReadTimeout
+
+import pandas as pd
+from bs4 import BeautifulSoup
 
 # --------------------------------------------------------------------------- #
 # ----------------------------  credentials  -------------------------------- #
@@ -38,39 +41,71 @@ HEADERS = {"Content-Type": "application/json"}
 
 # --------------------------------------------------------------------------- #
 # ----------------------------- config tweak -------------------------------- #
-DEFAULT_TIMEOUT = 90          # seconds to wait for ONE Oxylabs reply
-MAX_RETRIES     = 4           # how many times we retry the same page
+DEFAULT_TIMEOUT = 90  # seconds to wait for ONE Oxylabs reply
+MAX_RETRIES = 4  # how many times we retry the same page
 
 
 # --------------------------------------------------------------------------- #
 # ---------------------------  helper functions  ---------------------------- #
-os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",realtime.oxylabs.io"
-pprint.pprint(requests.utils.get_environ_proxies("https://realtime.oxylabs.io"))
+os.environ["NO_PROXY"] = (
+    os.environ.get("NO_PROXY", "") + ",realtime.oxylabs.io"
+)
+pprint.pprint(
+    requests.utils.get_environ_proxies("https://realtime.oxylabs.io")
+)
+
+
 def build_indeed_url(query: str, page: int, country: str) -> str:
-    base = INDEED_BASE if country.lower() == "us" else f"https://{country}.indeed.com/jobs"
+    base = (
+        INDEED_BASE
+        if country.lower() == "us"
+        else f"https://{country}.indeed.com/jobs"
+    )
     start = page * RESULTS_PER_PAGE
     return f"{base}?q={query.replace(' ', '+')}&start={start}"
 
-def fetch_page_html(url: str, timeout_s: int, retries: int = 4) -> str:
+
+def fetch_page_html(
+    url: str, timeout_s: int, retries: int = MAX_RETRIES
+) -> str:
+    """Return raw HTML from Oxylabs, retrying on network errors."""
+
     payload = {"source": "universal", "url": url}
     auth = HTTPBasicAuth(API_USER, API_PASS)
-    no_proxy = {"https": ""}        # <-- fixed
+    no_proxy = {"https": ""}
 
     for attempt in range(1, retries + 1):
         try:
-            r = requests.post(
+            resp = requests.post(
                 ENDPOINT,
                 json=payload,
                 auth=auth,
+                headers=HEADERS,
                 timeout=(5, timeout_s),
-                proxies=no_proxy        # <-- fixed
+                proxies=no_proxy,
             )
-            # … keep the rest unchanged …
-        except Exception as e:
-            if attempt == retries:
-                logging.error("Failed to fetch page after %d attempts: %s", retries, e)
-                return ""
-            sleep(2)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("results", [{}])[0].get("content", "")
+        except (ReadTimeout, ConnectionError) as exc:
+            logging.warning(
+                "Attempt %d/%d: network error fetching %s: %s",
+                attempt,
+                retries,
+                url,
+                exc,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Attempt %d/%d failed for %s: %s",
+                attempt,
+                retries,
+                url,
+                exc,
+            )
+        sleep(2)
+
+    logging.error("Failed to fetch page after %d attempts: %s", retries, url)
     return ""
 
 
@@ -128,10 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-
 def main(argv: List[str]) -> None:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s: %(message)s"
+    )
 
     seen_urls: set[str] = set()
     all_rows: List[Dict[str, str]] = []
@@ -145,8 +181,12 @@ def main(argv: List[str]) -> None:
             if r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 all_rows.append(r)
-        logging.info("Page %d → %d ads (cumulative %d)",
-                     page + 1, len(rows), len(all_rows))
+        logging.info(
+            "Page %d → %d ads (cumulative %d)",
+            page + 1,
+            len(rows),
+            len(all_rows),
+        )
         sleep(args.sleep)
 
     if not all_rows:
@@ -156,7 +196,9 @@ def main(argv: List[str]) -> None:
     df = pd.DataFrame(all_rows)
     save_csv(df, args.csv_out)
     save_sqlite(df, args.db_out)
-    print(f"✓ Scraped {len(df)} unique ads from {df['company'].nunique()} companies")
+    print(
+        f"✓ Scraped {len(df)} unique ads from {df['company'].nunique()} companies"
+    )
 
 
 if __name__ == "__main__":
