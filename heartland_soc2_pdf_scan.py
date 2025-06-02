@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import requests
-from pdfminer.high_level import extract_pages
+from pdfminer.high_level import extract_pages, extract_text
 from pdfminer.pdfparser import PDFSyntaxError
 
 
@@ -79,7 +79,8 @@ def download_pdf(url: str, output_dir: Path) -> Optional[Path]:
     except requests.RequestException as exc:
         logging.error("Error downloading %s: %s", url, exc)
         try:
-            tmp_path.unlink()
+            if 'tmp_path' in locals():
+                tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
         return None
