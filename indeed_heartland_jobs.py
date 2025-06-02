@@ -69,79 +69,132 @@ pprint.pprint(
 
 
 def build_indeed_url(query: str, page: int, country: str) -> str:
-    base = (
-        INDEED_BASE
-        if country.lower() == "us"
-        else f"https://{country}.indeed.com/jobs"
-    )
+    base = INDEED_BASE if country.lower() == "us" else f"https://{country}.indeed.com/jobs"
     start = page * RESULTS_PER_PAGE
-    return f"{base}?q={query.replace(' ', '+')}&start={start}"
+    
+    # URL encode the query properly
+    import urllib.parse
+    encoded_query = urllib.parse.quote_plus(query)
+    
+    url = f"{base}?q={encoded_query}&start={start}"
+    logging.info(f"Built URL: {url}")
+    return url
 
 
-def fetch_page_html(
-    url: str, timeout_s: int, retries: int = MAX_RETRIES
-) -> str:
-    """Return raw HTML from Oxylabs, retrying on network errors."""
-
-    payload = {"source": "universal", "url": url}
+def fetch_page_html(url: str, timeout_s: int, retries: int = MAX_RETRIES) -> str:
+    payload = {
+        "source": "universal",
+        "url": url,
+        "render": "html"  # Ensure we get rendered HTML
+    }
     auth = HTTPBasicAuth(API_USER, API_PASS)
-    no_proxy = {"https": ""}
-
+    
     for attempt in range(1, retries + 1):
         try:
+            logging.info(f"Attempting to fetch: {url}")
             resp = requests.post(
                 ENDPOINT,
                 json=payload,
                 auth=auth,
                 headers=HEADERS,
-                timeout=(5, timeout_s),
-                proxies=no_proxy,
+                timeout=(10, timeout_s),  # Increased connection timeout
             )
+            
+            # Log the response status and content for debugging
+            logging.info(f"Response status: {resp.status_code}")
+            
+            if resp.status_code == 401:
+                logging.error("Authentication failed - check your API credentials")
+                return ""
+            elif resp.status_code == 429:
+                logging.warning("Rate limited - waiting longer...")
+                sleep(10)
+                continue
+                
             resp.raise_for_status()
             data = resp.json()
-            return data.get("results", [{}])[0].get("content", "")
-        except (ReadTimeout, ConnectionError) as exc:
-            logging.warning(
-                "Attempt %d/%d: network error fetching %s: %s",
-                attempt,
-                retries,
-                url,
-                exc,
-            )
+            
+            # Log the response structure for debugging
+            logging.debug(f"Response keys: {data.keys()}")
+            
+            content = data.get("results", [{}])[0].get("content", "")
+            if not content:
+                logging.warning("Empty content received")
+            return content
+            
+        except requests.exceptions.HTTPError as e:
+            logging.error(f"HTTP error {e.response.status_code}: {e}")
+            if e.response.status_code == 401:
+                logging.error("Check your Oxylabs credentials")
+                return ""
         except Exception as exc:
-            logging.warning(
-                "Attempt %d/%d failed for %s: %s",
-                attempt,
-                retries,
-                url,
-                exc,
-            )
-        sleep(2)
+            logging.warning(f"Attempt {attempt}/{retries} failed for {url}: {exc}")
+            
+        sleep(min(2 ** attempt, 10))  # Exponential backoff
 
-    logging.error("Failed to fetch page after %d attempts: %s", retries, url)
+    logging.error(f"Failed to fetch page after {retries} attempts: {url}")
     return ""
 
-
 def parse_jobs(html: str) -> List[Dict[str, str]]:
+    if not html:
+        logging.warning("No HTML content to parse")
+        return []
+        
     soup = BeautifulSoup(html, "html.parser")
     jobs: List[Dict[str, str]] = []
+    
+    # Log a sample of the HTML for debugging
+    logging.debug(f"HTML sample: {html[:500]}...")
+    
+    # Try multiple selector patterns
+    selectors = [
+        "a.tapItem[data-jk]",
+        "[data-jk]",
+        ".jobsearch-SerpJobCard",
+        ".slider_container .slider_item"
+    ]
+    
+    cards = []
+    for selector in selectors:
+        cards = soup.select(selector)
+        if cards:
+            logging.info(f"Found {len(cards)} job cards using selector: {selector}")
+            break
+    
+    if not cards:
+        logging.warning("No job cards found with any selector")
+        # Save HTML for debugging
+        with open("debug_output.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        return []
 
-    for card in soup.select("a.tapItem[data-jk]"):
-        title = card.find("h2", class_="jobTitle")
-        company = card.find("span", class_="companyName")
-        location = card.find("div", class_="companyLocation")
-        if not (title and company):
+    for card in cards:
+        try:
+            # Try multiple ways to extract job data
+            title_elem = (card.find("h2", class_="jobTitle") or 
+                         card.find("a", {"data-jk": True}) or
+                         card.find("h2"))
+            
+            company_elem = (card.find("span", class_="companyName") or
+                           card.find(".companyName") or
+                           card.find("span", string=lambda x: bool(x and len(x.strip()) > 0)))
+            
+            location_elem = card.find("div", class_="companyLocation")
+            
+            if title_elem and company_elem:
+                job_id = card.get("data-jk", "")
+                jobs.append({
+                    "title": title_elem.get_text(strip=True),
+                    "company": company_elem.get_text(strip=True),
+                    "location": location_elem.get_text(strip=True) if location_elem else "",
+                    "url": f"https://www.indeed.com/viewjob?jk={job_id}" if job_id else "",
+                })
+        except Exception as e:
+            logging.warning(f"Error parsing job card: {e}")
             continue
-        jobs.append(
-            {
-                "title": title.get_text(strip=True),
-                "company": company.get_text(strip=True),
-                "location": location.get_text(strip=True) if location else "",
-                "url": f"https://www.indeed.com/viewjob?jk={card['data-jk']}",
-            }
-        )
+    
+    logging.info(f"Successfully parsed {len(jobs)} jobs")
     return jobs
-
 
 def save_csv(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False, quoting=csv.QUOTE_NONNUMERIC)
@@ -152,6 +205,27 @@ def save_sqlite(df: pd.DataFrame, db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         df.to_sql("jobs", conn, if_exists="append", index=False)
     logging.info("Wrote %d rows to SQLite → %s", len(df), db_path)
+
+def test_connection() -> bool:
+    """Test the Oxylabs API connection with a simple request"""
+    test_url = "https://httpbin.org/get"
+    payload = {"source": "universal", "url": test_url}
+    auth = HTTPBasicAuth(API_USER, API_PASS)
+    
+    try:
+        resp = requests.post(ENDPOINT, json=payload, auth=auth, headers=HEADERS, timeout=30)
+        logging.info(f"Test response status: {resp.status_code}")
+        if resp.status_code == 200:
+            logging.info("API connection successful")
+            return True
+        else:
+            logging.error(f"API test failed: {resp.text}")
+            return False
+    except Exception as e:
+        logging.error(f"API test error: {e}")
+        return False
+    
+    # ... rest of your code
 
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +255,11 @@ def main(argv: List[str]) -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s: %(message)s"
     )
+
+    # Test API connection first
+    if not test_connection():
+        logging.error("API connection test failed. Check your credentials and network.")
+        return
 
     seen_urls: set[str] = set()
     all_rows: List[Dict[str, str]] = []
