@@ -1,0 +1,9 @@
+# requirements.txt
+#
+# Locked runtime dependencies for the Indeed-Heartland scraper.
+# Pin versions so CI runs are reproducible and to avoid the
+# “latest-breaks” problem.
+
+pandas==2.2.3          # data frames, CSV I/O
+beautifulsoup4==4.13.4 # HTML parsing
+requests==2.32.3       # HTTP client (used for Oxylabs API calls)
