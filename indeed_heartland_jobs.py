@@ -27,7 +27,20 @@ from requests.auth import HTTPBasicAuth
 from requests.exceptions import ConnectionError, ReadTimeout
 
 import pandas as pd
-from bs4 import BeautifulSoup
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("Error: BeautifulSoup4 is required but not installed.")
+    print("")
+    print("To fix this, create a virtual environment and install dependencies:")
+    print("  python -m venv .venv")
+    print("  .venv\\Scripts\\activate  (Windows)")
+    print("  pip install beautifulsoup4 pandas requests")
+    print("")
+    print("Or install globally:")
+    print("  pip install beautifulsoup4 pandas requests")
+    sys.exit(1)
 
 # --------------------------------------------------------------------------- #
 # ----------------------------  credentials  -------------------------------- #
