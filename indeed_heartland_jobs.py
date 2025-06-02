@@ -4,7 +4,7 @@ Indeed job scraper – powered by Oxylabs Web Scraper API (Realtime).
 No headless browser, no proxies: each page is fetched via one HTTPS POST.
 
 Example:
-    python indeed_heartland_oxylabs.py --pages 5
+    python indeed_heartland_jobs.py --pages 5
 """
 
 from __future__ import annotations
