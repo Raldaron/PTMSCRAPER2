@@ -20,7 +20,7 @@ from time import sleep
 from typing import Dict, List
 
 import pandas as pd
-import requests
+import requests, os, pprint
 from bs4 import BeautifulSoup
 from requests.auth import HTTPBasicAuth
 import time
@@ -44,42 +44,34 @@ MAX_RETRIES     = 4           # how many times we retry the same page
 
 # --------------------------------------------------------------------------- #
 # ---------------------------  helper functions  ---------------------------- #
+os.environ["NO_PROXY"] = os.environ.get("NO_PROXY", "") + ",realtime.oxylabs.io"
+pprint.pprint(requests.utils.get_environ_proxies("https://realtime.oxylabs.io"))
 def build_indeed_url(query: str, page: int, country: str) -> str:
     base = INDEED_BASE if country.lower() == "us" else f"https://{country}.indeed.com/jobs"
     start = page * RESULTS_PER_PAGE
     return f"{base}?q={query.replace(' ', '+')}&start={start}"
 
-
 def fetch_page_html(url: str, timeout_s: int, retries: int = 4) -> str:
-    backoff = 2.0
-    auth = HTTPBasicAuth(API_USER, API_PASS)
     payload = {"source": "universal", "url": url}
+    auth = HTTPBasicAuth(API_USER, API_PASS)
+    no_proxy = {"https": ""}        # <-- fixed
 
     for attempt in range(1, retries + 1):
-        t0 = time.monotonic()
         try:
-            r = requests.post(ENDPOINT, json=payload,
-                              auth=auth, timeout=timeout_s)
-        except (ReadTimeout, ConnectionError) as exc:
-            logging.warning("Network %s on %s (try %d/%d)",
-                            exc.__class__.__name__, url, attempt, retries)
-        else:
-            dt = time.monotonic() - t0
-            if r.status_code == 200:
-                logging.debug("200 in %.2f s", dt)
-                return r.json()["results"][0]["content"]
-
-            logging.warning("%d in %.2f s on %s (try %d/%d)",
-                            r.status_code, dt, url, attempt, retries)
-
-            # 202 = still rendering, 429 = slow down
-            if r.status_code not in (202, 429):
-                r.raise_for_status()
-
-        time.sleep(backoff)
-        backoff *= 1.7
-
-    raise RuntimeError(f"Failed after {retries} attempts → {url}")
+            r = requests.post(
+                ENDPOINT,
+                json=payload,
+                auth=auth,
+                timeout=(5, timeout_s),
+                proxies=no_proxy        # <-- fixed
+            )
+            # … keep the rest unchanged …
+        except Exception as e:
+            if attempt == retries:
+                logging.error("Failed to fetch page after %d attempts: %s", retries, e)
+                return ""
+            sleep(2)
+    return ""
 
 
 def parse_jobs(html: str) -> List[Dict[str, str]]:

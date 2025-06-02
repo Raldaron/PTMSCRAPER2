@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+import requests, os, pprint
+from bs4 import BeautifulSoup, Tag
 from pdfminer.high_level import extract_text
 
 SEC_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
@@ -21,7 +21,7 @@ SEC_SLEEP = 0.2
 SEC_LIMIT_PER_MIN = 10
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
+pprint.pprint(requests.utils.get_environ_proxies("https://realtime.oxylabs.io"))
 
 def download_pdf(url: str, out_dir: Path) -> Optional[Path]:
     """Download PDF if size < 8MB."""
@@ -172,9 +172,14 @@ class RfpSearcher:
             return
         soup = BeautifulSoup(r.text, "html.parser")
         for link in soup.find_all("a", href=True):
+            if not isinstance(link, Tag):
+                continue
             text = link.get_text(" ", strip=True)
             if self.keyword.lower() in text.lower():
-                href = link["href"]
+                href_attr = link.get("href")
+                if href_attr is None:
+                    continue
+                href = str(href_attr) if not isinstance(href_attr, str) else href_attr
                 if not href.startswith("http"):
                     href = url.split("/")[0] + "//" + url.split("/")[2] + href
                 self.hits.append(
